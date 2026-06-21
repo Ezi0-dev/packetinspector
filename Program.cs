@@ -44,7 +44,7 @@ device.Open(DeviceModes.Promiscuous, 1000);
 
 Console.WriteLine($"\nCapturing on {device.Name}. Press CTRL+C to stop.\n");
 device.StartCapture();
-device.Filter = "udp port 53"; // Just for testing
+device.Filter = "tcp port 80"; // Just for testing
 
 Console.CancelKeyPress += (_, e) =>
 {
@@ -100,11 +100,18 @@ static void ParseTcp(byte[] data, int offset, string srcIp, string dstIp)
 {
     ushort srcPort = ReadUInt16BigEndian(data, offset);
     ushort dstPort = ReadUInt16BigEndian(data, offset + 2);
-
     byte flags = data[offset + 13];
-    string flagStr = DecodeFlags(flags);
 
-    Console.WriteLine($"TCP   {srcIp}:{srcPort} -> {dstIp}:{dstPort}  [{flagStr}]");
+    int tcpHeaderLength = ((data[offset + 12] >> 4) & 0x0F) * 4;
+    int payloadOffset = offset + tcpHeaderLength;
+    int payloadLength = data.Length - payloadOffset;
+
+    Console.WriteLine($"TCP   {srcIp}:{srcPort} -> {dstIp}:{dstPort}  [{DecodeFlags(flags)}]");
+
+    if ((srcPort == 80 || dstPort == 80) && payloadLength > 0)
+    {
+        ParseHttp(data, payloadOffset, payloadLength, srcIp, dstIp);
+    }
 }
 
 static string DecodeFlags(byte flags)
@@ -145,7 +152,7 @@ static void ParseDns(byte[] data, int offset, string srcIp, string dstIp)
 
     int pos = offset + DnsHeaderLength;
 
-    // ── Question section ──
+    // Question section 
     string queryName = ReadDnsName(data, pos, messageStart, out pos);
     pos += 4; // skip QTYPE (2) + QCLASS (2) — we don't need them here
 
@@ -157,7 +164,7 @@ static void ParseDns(byte[] data, int offset, string srcIp, string dstIp)
 
     Console.WriteLine($"DNS   {srcIp} -> {dstIp}  response  {queryName}");
 
-    // ── Answer section — this is the part we were skipping ──
+    // Answer section, this is the part we were skipping
     for (int i = 0; i < anCount; i++)
     {
         string name = ReadDnsName(data, pos, messageStart, out pos);
@@ -222,4 +229,29 @@ static string ReadDnsName(byte[] data, int pos, int messageStart, out int endPos
 
     endPos = jumped ? originalPos : pos;
     return string.Join(".", labels);
+}
+
+static void ParseHttp(byte[] data, int offset, int length, string srcIp, string dstIp)
+{
+    string text = System.Text.Encoding.ASCII.GetString(data, offset, length);
+
+    int headerEnd = text.IndexOf("\r\n\r\n");
+    string headerSection = headerEnd >= 0 ? text[..headerEnd] : text;
+
+    string[] lines = headerSection.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+    if (lines.Length == 0) return;
+
+    string firstLine = lines[0];
+
+    if (firstLine.StartsWith("HTTP/"))
+    {
+        Console.WriteLine($"HTTP  {srcIp} -> {dstIp}  response  {firstLine}");
+    }
+    else if (firstLine.Contains("HTTP/"))
+    {
+        Console.WriteLine($"HTTP  {srcIp} -> {dstIp}  request   {firstLine}");
+
+        string? host = lines.FirstOrDefault(l => l.StartsWith("Host:", StringComparison.OrdinalIgnoreCase));
+        if (host != null) Console.WriteLine($"        {host}");
+    }
 }
