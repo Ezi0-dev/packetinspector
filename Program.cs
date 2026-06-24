@@ -2,6 +2,8 @@
 using PacketDotNet;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Spectre.Console;
+using System.Collections.Concurrent;
 
 // Constants
 const int EthernetHeaderLength = 14;
@@ -17,18 +19,85 @@ const int DnsHeaderLength = 12;
 const ushort DnsTypeA = 1;
 const ushort DnsTypeAAAA = 28;
 
+// Shared state vars (capture thread and main thread) - for TUI
+var packetQueue = new ConcurrentQueue<ParsedPacket>();
+long totalPackets = 0;
+long tcpCount = 0;
+long udpCount = 0;
+long dnsCount = 0;
+long httpCount = 0;
+var recentPackets = new Queue<ParsedPacket>(); // last N packets for the table
+var topIps = new Dictionary<string, int>();    // dst IP → count
+
 FilterNode? filterAst = null;
-
 BinaryWriter? pcapWriter = null;
-bool pcapMode = args.Contains("--output-pcap");
 
-if (pcapMode)
+bool pcapMode = args.Contains("--output-pcap"); // PCAP mode
+bool jsonMode = args.Contains("--output-json"); // JSON mode
+bool tuiMode = args.Contains("--output-tui");
+
+// TUI layout
+Table BuildLayout()
 {
-    string filename = $"capture_{DateTime.Now:yyyyMMdd_HHmmss}.pcap";
-    var stream = new FileStream(filename, FileMode.Create, FileAccess.Write);
-    pcapWriter = new BinaryWriter(stream);
-    WritePcapGlobalHeader(pcapWriter);
-    Console.Error.WriteLine($"Writing to {filename}");
+    long total = Interlocked.Read(ref totalPackets);
+    long tcp = Interlocked.Read(ref tcpCount);
+    long udp = Interlocked.Read(ref udpCount);
+    long dns = Interlocked.Read(ref dnsCount);
+    long http = Interlocked.Read(ref httpCount);
+
+    var statsTable = new Table().NoBorder().HideHeaders();
+    statsTable.AddColumn("").AddColumn("").AddColumn("");
+
+    var totalPanel = new Panel($"[red]{total:N0}[/]\n[grey]packets[/]")
+        .Header("Total").BorderColor(Color.Grey);
+
+    var protoPanel = new Panel(
+        $"[blue]TCP  {tcp,6:N0}[/]\n[green]UDP  {udp,6:N0}[/]\n[yellow]DNS  {dns,6:N0}[/]\n[red]HTTP {http,6:N0}[/]")
+        .Header("Protocols").BorderColor(Color.Grey);
+
+    var topIpsSorted = topIps.OrderByDescending(kv => kv.Value).Take(3);
+    string topIpsText = string.Join("\n", topIpsSorted.Select((kv, i) => $"{i+1}. {kv.Key,-18} {kv.Value}"));
+    var topPanel = new Panel(topIpsText.Length > 0 ? topIpsText : "[grey]waiting...[/]")
+        .Header("Top Destinations").BorderColor(Color.Grey);
+
+    statsTable.AddRow(totalPanel, protoPanel, topPanel);
+
+    // Recent packets table
+    var packetTable = new Table()
+        .Border(TableBorder.Rounded)
+        .BorderColor(Color.Grey)
+        .AddColumn("[grey]Time[/]")
+        .AddColumn("[grey]Proto[/]")
+        .AddColumn("[grey]Source[/]")
+        .AddColumn("[grey]Destination[/]")
+        .AddColumn("[grey]Info[/]");
+    
+    foreach (var pkt in recentPackets)
+    {
+        string proto = pkt.Protocol.ToUpper();
+        string color = pkt.Protocol switch
+        {
+            "tcp"  => "blue",
+            "udp"  => "green",
+            "dns"  => "yellow",
+            "http" => "red",
+            _      => "white"
+        };
+        string info = pkt.DnsName ?? (pkt.HttpStatus?.ToString() ?? "");
+        packetTable.AddRow(
+            $"[grey]{pkt.Timestamp}[/]",
+            $"[{color}]{proto}[/]",
+            $"{pkt.SrcIp}:{pkt.SrcPort}",
+            $"{pkt.DstIp}:{pkt.DstPort}",
+            info
+        );
+    }
+
+    var layout = new Table().NoBorder().HideHeaders().Expand();
+    layout.AddColumn("");
+    layout.AddRow(new Panel(statsTable).Header("[red]⚡ PacketInspector[/]").Expand());
+    layout.AddRow(packetTable);
+    return layout;
 }
 
 var devices = CaptureDeviceList.Instance;
@@ -63,14 +132,66 @@ if (!string.IsNullOrWhiteSpace(filterInput)) //
     }
 }
 
-bool jsonMode = args.Contains("--output-json"); // JSON mode
+
 
 var device = devices[index];
 device.OnPacketArrival += OnPacketArrival;
 device.Open(DeviceModes.Promiscuous, 1000);
+
+
 Console.WriteLine($"\nCapturing on {device.Name}. Press CTRL+C to stop.\n");
+
+
 device.StartCapture();
 //device.Filter = "tcp port 80"; // Just for testing
+
+if (tuiMode)
+{
+    AnsiConsole.Live(BuildLayout())
+        .AutoClear(true)
+        .Overflow(VerticalOverflow.Ellipsis)
+        .Start(ctx =>
+        {
+            while (true)
+            {
+                // Drain the queue (process everything the capture thread enqueued)
+                while (packetQueue.TryDequeue(out var pkt))
+                {
+                    Interlocked.Increment(ref totalPackets);
+
+                    switch (pkt.Protocol)
+                    {
+                        case "tcp":  Interlocked.Increment(ref tcpCount);  break;
+                        case "udp":  Interlocked.Increment(ref udpCount);  break;
+                        case "dns":  Interlocked.Increment(ref dnsCount);  break;
+                        case "http": Interlocked.Increment(ref httpCount); break;
+                    }
+
+                    if (!string.IsNullOrEmpty(pkt.DstIp))
+                    {
+                        topIps.TryGetValue(pkt.DstIp, out int count);
+                        topIps[pkt.DstIp] = count + 1;
+                    }
+
+                    recentPackets.Enqueue(pkt);
+                    if (recentPackets.Count > 8) recentPackets.Dequeue(); // Keep last 8
+                }
+
+                ctx.UpdateTarget(BuildLayout());
+                ctx.Refresh();
+                Thread.Sleep(250); // 4 renders per second
+            }
+        });
+}
+
+if (pcapMode)
+{
+    string filename = $"capture_{DateTime.Now:yyyyMMdd_HHmmss}.pcap";
+    var stream = new FileStream(filename, FileMode.Create, FileAccess.Write);
+    pcapWriter = new BinaryWriter(stream);
+    WritePcapGlobalHeader(pcapWriter);
+    Console.Error.WriteLine($"Writing to {filename}");
+}
 
 Console.CancelKeyPress += (_, e) =>
 {
@@ -105,8 +226,8 @@ void OnPacketArrival(object sender, PacketCapture e)
     if (packet == null) return;
 
     if (filterAst != null && !Evaluate(filterAst, packet))
-        return; // doesn't match — skip silently, no output at all
-
+        return; // doesn't match — skip
+    
     packet = packet with { Timestamp = raw.Timeval.Date.ToString("HH:mm:ss.fff") };
 
     if (jsonMode)
@@ -114,12 +235,16 @@ void OnPacketArrival(object sender, PacketCapture e)
         var options = new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
         Console.WriteLine(JsonSerializer.Serialize(packet, options));
     }
-    else
+
+    if (tuiMode)
     {
-        Console.WriteLine($"{raw.Timeval.Date:HH:mm:ss.fff}  {packet.Protocol.ToUpper(),-5} {packet.SrcIp}:{packet.SrcPort} -> {packet.DstIp}:{packet.DstPort}" 
-            + (packet.DnsName != null ? $"  {packet.DnsName}" : "")
-            + (packet.HttpStatus != null ? $"  status={packet.HttpStatus}" : ""));
+        packetQueue.Enqueue(packet); // Let main thread handle it
+        return;
     }
+
+    Console.WriteLine($"{raw.Timeval.Date:HH:mm:ss.fff}  {packet.Protocol.ToUpper(),-5} {packet.SrcIp}:{packet.SrcPort} -> {packet.DstIp}:{packet.DstPort}" 
+        + (packet.DnsName != null ? $"  {packet.DnsName}" : "")
+        + (packet.HttpStatus != null ? $"  status={packet.HttpStatus}" : ""));
 }
 
 static ParsedPacket? ParseIPv4(byte[] data, int offset)
