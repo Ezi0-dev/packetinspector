@@ -270,18 +270,6 @@ static uint ReadUInt32BigEndian(byte[] data, int offset)
     => (uint)((data[offset] << 24) | (data[offset + 1] << 16)
              | (data[offset + 2] << 8) | data[offset + 3]);
 
-static string DecodeFlags(byte flags)
-{
-    var set = new List<string>();
-    if ((flags & 0x01) != 0) set.Add("FIN");
-    if ((flags & 0x02) != 0) set.Add("SYN");
-    if ((flags & 0x04) != 0) set.Add("RST");
-    if ((flags & 0x08) != 0) set.Add("PSH");
-    if ((flags & 0x10) != 0) set.Add("ACK");
-    if ((flags & 0x20) != 0) set.Add("URG");
-    return string.Join(",", set);
-}
-
 static List<Token> Tokenize(string input)
 {
     var tokens = new List<Token>();
