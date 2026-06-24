@@ -34,7 +34,7 @@ BinaryWriter? pcapWriter = null;
 
 bool pcapMode = args.Contains("--output-pcap"); // PCAP mode
 bool jsonMode = args.Contains("--output-json"); // JSON mode
-bool tuiMode = args.Contains("--output-tui");
+bool tuiMode = !args.Contains("--no-tui") && !args.Contains("--output-json");
 
 // TUI layout
 Table BuildLayout()
@@ -132,16 +132,19 @@ if (!string.IsNullOrWhiteSpace(filterInput)) //
     }
 }
 
-
+if (pcapMode)
+{
+    string filename = $"capture_{DateTime.Now:yyyyMMdd_HHmmss}.pcap";
+    var stream = new FileStream(filename, FileMode.Create, FileAccess.Write);
+    pcapWriter = new BinaryWriter(stream);
+    WritePcapGlobalHeader(pcapWriter);
+    Console.Error.WriteLine($"Writing to {filename}");
+}
 
 var device = devices[index];
 device.OnPacketArrival += OnPacketArrival;
 device.Open(DeviceModes.Promiscuous, 1000);
-
-
 Console.WriteLine($"\nCapturing on {device.Name}. Press CTRL+C to stop.\n");
-
-
 device.StartCapture();
 //device.Filter = "tcp port 80"; // Just for testing
 
@@ -181,16 +184,8 @@ if (tuiMode)
                 ctx.Refresh();
                 Thread.Sleep(250); // 4 renders per second
             }
-        });
-}
-
-if (pcapMode)
-{
-    string filename = $"capture_{DateTime.Now:yyyyMMdd_HHmmss}.pcap";
-    var stream = new FileStream(filename, FileMode.Create, FileAccess.Write);
-    pcapWriter = new BinaryWriter(stream);
-    WritePcapGlobalHeader(pcapWriter);
-    Console.Error.WriteLine($"Writing to {filename}");
+        }
+    );
 }
 
 Console.CancelKeyPress += (_, e) =>
@@ -236,15 +231,8 @@ void OnPacketArrival(object sender, PacketCapture e)
         Console.WriteLine(JsonSerializer.Serialize(packet, options));
     }
 
-    if (tuiMode)
-    {
-        packetQueue.Enqueue(packet); // Let main thread handle it
-        return;
-    }
-
-    Console.WriteLine($"{raw.Timeval.Date:HH:mm:ss.fff}  {packet.Protocol.ToUpper(),-5} {packet.SrcIp}:{packet.SrcPort} -> {packet.DstIp}:{packet.DstPort}" 
-        + (packet.DnsName != null ? $"  {packet.DnsName}" : "")
-        + (packet.HttpStatus != null ? $"  status={packet.HttpStatus}" : ""));
+    packetQueue.Enqueue(packet); // Let main thread handle it
+    return;
 }
 
 static ParsedPacket? ParseIPv4(byte[] data, int offset)
@@ -331,14 +319,14 @@ static ParsedPacket? ParseDns(byte[] data, int offset, string srcIp, string dstI
         if (type == DnsTypeA && rdLength == 4)
         {
             string ip = $"{data[rdataOffset]}.{data[rdataOffset+1]}.{data[rdataOffset+2]}.{data[rdataOffset+3]}";
-            Console.WriteLine($"        -> A     {name} = {ip}");
+            //Console.WriteLine($"        -> A     {name} = {ip}");
         }
         else if (type == DnsTypeAAAA && rdLength == 16)
         {
             var groups = new string[8];
             for (int g = 0; g < 8; g++)
                 groups[g] = ReadUInt16BigEndian(data, rdataOffset + g * 2).ToString("x");
-            Console.WriteLine($"        -> AAAA  {name} = {string.Join(":", groups)}");
+            //Console.WriteLine($"        -> AAAA  {name} = {string.Join(":", groups)}");
         }
 
         pos = rdataOffset + rdLength; // advance past this record to the next one
