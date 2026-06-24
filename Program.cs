@@ -56,7 +56,7 @@ Table BuildLayout()
         .Header("Protocols").BorderColor(Color.Grey);
 
     var topIpsSorted = topIps.OrderByDescending(kv => kv.Value).Take(3);
-    string topIpsText = string.Join("\n", topIpsSorted.Select((kv, i) => $"{i+1}. {kv.Key,-18} {kv.Value}"));
+    string topIpsText = string.Join("\n", topIpsSorted.Select((kv, i) => $"{i + 1}. {kv.Key,-18} {kv.Value}"));
     var topPanel = new Panel(topIpsText.Length > 0 ? topIpsText : "[grey]waiting...[/]")
         .Header("Top Destinations").BorderColor(Color.Grey);
 
@@ -71,17 +71,17 @@ Table BuildLayout()
         .AddColumn("[grey]Source[/]")
         .AddColumn("[grey]Destination[/]")
         .AddColumn("[grey]Info[/]");
-    
+
     foreach (var pkt in recentPackets)
     {
         string proto = pkt.Protocol.ToUpper();
         string color = pkt.Protocol switch
         {
-            "tcp"  => "blue",
-            "udp"  => "green",
-            "dns"  => "yellow",
+            "tcp" => "blue",
+            "udp" => "green",
+            "dns" => "yellow",
             "http" => "red",
-            _      => "white"
+            _ => "white"
         };
         string info = pkt.DnsName ?? (pkt.HttpStatus?.ToString() ?? "");
         packetTable.AddRow(
@@ -164,9 +164,9 @@ if (tuiMode)
 
                     switch (pkt.Protocol)
                     {
-                        case "tcp":  Interlocked.Increment(ref tcpCount);  break;
-                        case "udp":  Interlocked.Increment(ref udpCount);  break;
-                        case "dns":  Interlocked.Increment(ref dnsCount);  break;
+                        case "tcp": Interlocked.Increment(ref tcpCount); break;
+                        case "udp": Interlocked.Increment(ref udpCount); break;
+                        case "dns": Interlocked.Increment(ref dnsCount); break;
                         case "http": Interlocked.Increment(ref httpCount); break;
                     }
 
@@ -190,7 +190,7 @@ if (tuiMode)
 
 Console.CancelKeyPress += (_, e) =>
 {
-    e.Cancel = true;    
+    e.Cancel = true;
     device.StopCapture();
     device.Close();
     pcapWriter?.Flush();
@@ -222,7 +222,7 @@ void OnPacketArrival(object sender, PacketCapture e)
 
     if (filterAst != null && !Evaluate(filterAst, packet))
         return; // doesn't match — skip
-    
+
     packet = packet with { Timestamp = raw.Timeval.Date.ToString("HH:mm:ss.fff") };
 
     if (jsonMode)
@@ -241,8 +241,8 @@ static ParsedPacket? ParseIPv4(byte[] data, int offset)
     int ihl = (versionAndIhl & 0x0F) * 4;
     byte protocol = data[offset + 9]; // The 9th byte reads the protocol
 
-    string srcIp = $"{data[offset+12]}.{data[offset+13]}.{data[offset+14]}.{data[offset+15]}";
-    string dstIp = $"{data[offset+16]}.{data[offset+17]}.{data[offset+18]}.{data[offset+19]}";
+    string srcIp = $"{data[offset + 12]}.{data[offset + 13]}.{data[offset + 14]}.{data[offset + 15]}";
+    string dstIp = $"{data[offset + 16]}.{data[offset + 17]}.{data[offset + 18]}.{data[offset + 19]}";
 
     int transportOffset = offset + ihl;
 
@@ -318,7 +318,7 @@ static ParsedPacket? ParseDns(byte[] data, int offset, string srcIp, string dstI
 
         if (type == DnsTypeA && rdLength == 4)
         {
-            string ip = $"{data[rdataOffset]}.{data[rdataOffset+1]}.{data[rdataOffset+2]}.{data[rdataOffset+3]}";
+            string ip = $"{data[rdataOffset]}.{data[rdataOffset + 1]}.{data[rdataOffset + 2]}.{data[rdataOffset + 3]}";
             //Console.WriteLine($"        -> A     {name} = {ip}");
         }
         else if (type == DnsTypeAAAA && rdLength == 16)
@@ -341,7 +341,7 @@ static ParsedPacket? ParseHttp(byte[] data, int offset, int length, string srcIp
     int headerEnd = text.IndexOf("\r\n\r\n");
     string headerSection = headerEnd >= 0 ? text[..headerEnd] : text;
     string[] lines = headerSection.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-    
+
     if (lines.Length == 0) return null;
     string firstLine = lines[0];
 
@@ -447,7 +447,7 @@ static List<Token> Tokenize(string input)
             _ => TokenType.Ident
         };
         tokens.Add(new Token(type, word));
-        
+
     }
 
     tokens.Add(new Token(TokenType.Eof, ""));
