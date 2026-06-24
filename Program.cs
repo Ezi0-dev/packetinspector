@@ -19,6 +19,18 @@ const ushort DnsTypeAAAA = 28;
 
 FilterNode? filterAst = null;
 
+BinaryWriter? pcapWriter = null;
+bool pcapMode = args.Contains("--output-pcap");
+
+if (pcapMode)
+{
+    string filename = $"capture_{DateTime.Now:yyyyMMdd_HHmmss}.pcap";
+    var stream = new FileStream(filename, FileMode.Create, FileAccess.Write);
+    pcapWriter = new BinaryWriter(stream);
+    WritePcapGlobalHeader(pcapWriter);
+    Console.Error.WriteLine($"Writing to {filename}");
+}
+
 var devices = CaptureDeviceList.Instance;
 
 if (devices.Count == 0)
@@ -37,7 +49,7 @@ var index = int.Parse(Console.ReadLine()!);
 Console.Write("Enter filter (or press Enter for no filter): ");
 string filterInput = Console.ReadLine() ?? "";
 
-if (!string.IsNullOrWhiteSpace(filterInput))
+if (!string.IsNullOrWhiteSpace(filterInput)) //
 {
     try
     {
@@ -65,6 +77,8 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;    
     device.StopCapture();
     device.Close();
+    pcapWriter?.Flush();
+    pcapWriter?.Close();
     Console.WriteLine("\nCapture stopped.");
     Environment.Exit(0);
 };
@@ -75,6 +89,12 @@ void OnPacketArrival(object sender, PacketCapture e)
 {
     var raw = e.GetPacket();
     byte[] data = raw.Data;
+
+    if (pcapMode && pcapWriter != null)
+    {
+        WritePcapPacket(pcapWriter, e);
+        pcapWriter.Flush();
+    }
 
     if (data.Length < EthernetHeaderLength) return;
 
@@ -260,6 +280,34 @@ static string ReadDnsName(byte[] data, int pos, int messageStart, out int endPos
 
     endPos = jumped ? originalPos : pos;
     return string.Join(".", labels);
+}
+
+static void WritePcapGlobalHeader(BinaryWriter writer)
+{
+    writer.Write(0xA1B2C3D4u); // magic number — makes the file an actual pcap file so wireshark can read it
+    writer.Write((ushort)2);   // major version
+    writer.Write((ushort)4);   // minor version
+    writer.Write(0);           // UTC offset — always 0
+    writer.Write(0);           // timestamp accuracy — always 0
+    writer.Write(65535u);      // snaplen — max packet size
+    writer.Write(1u);          // link type 1 = Ethernet
+}
+
+static void WritePcapPacket(BinaryWriter writer, PacketCapture e)
+{
+    var raw = e.GetPacket();
+    byte[] data = raw.Data;
+
+    uint seconds = (uint)raw.Timeval.Seconds;
+    uint microseconds = (uint)raw.Timeval.MicroSeconds;
+    uint capturedLength = (uint)data.Length;
+    uint originalLength = (uint)data.Length;
+
+    writer.Write(seconds);
+    writer.Write(microseconds);
+    writer.Write(capturedLength);
+    writer.Write(originalLength);
+    writer.Write(data);
 }
 
 // Byte reading helpers
