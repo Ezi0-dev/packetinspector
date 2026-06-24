@@ -1,5 +1,7 @@
 ﻿using SharpPcap;
 using PacketDotNet;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 // Constants
 const int EthernetHeaderLength = 14;
@@ -49,6 +51,8 @@ if (!string.IsNullOrWhiteSpace(filterInput))
     }
 }
 
+bool jsonMode = args.Contains("--output-json"); // JSON mode
+
 var device = devices[index];
 device.OnPacketArrival += OnPacketArrival;
 device.Open(DeviceModes.Promiscuous, 1000);
@@ -83,9 +87,19 @@ void OnPacketArrival(object sender, PacketCapture e)
     if (filterAst != null && !Evaluate(filterAst, packet))
         return; // doesn't match — skip silently, no output at all
 
-    Console.WriteLine($"{raw.Timeval.Date:HH:mm:ss.fff}  {packet.Protocol.ToUpper(),-5} {packet.SrcIp}:{packet.SrcPort} -> {packet.DstIp}:{packet.DstPort}" 
-        + (packet.DnsName != null ? $"  {packet.DnsName}" : "")
-        + (packet.HttpStatus != null ? $"  status={packet.HttpStatus}" : ""));
+    packet = packet with { Timestamp = raw.Timeval.Date.ToString("HH:mm:ss.fff") };
+
+    if (jsonMode)
+    {
+        var options = new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+        Console.WriteLine(JsonSerializer.Serialize(packet, options));
+    }
+    else
+    {
+        Console.WriteLine($"{raw.Timeval.Date:HH:mm:ss.fff}  {packet.Protocol.ToUpper(),-5} {packet.SrcIp}:{packet.SrcPort} -> {packet.DstIp}:{packet.DstPort}" 
+            + (packet.DnsName != null ? $"  {packet.DnsName}" : "")
+            + (packet.HttpStatus != null ? $"  status={packet.HttpStatus}" : ""));
+    }
 }
 
 static ParsedPacket? ParseIPv4(byte[] data, int offset)
@@ -228,7 +242,7 @@ static string ReadDnsName(byte[] data, int pos, int messageStart, out int endPos
             break;
         }
 
-        // Top two bits set = pointer (0xC0 = 1100 0000)
+        // Top two bits set = pointer (0xC0 = 1100 0000), (jump to pointer)
         if ((len & 0xC0) == 0xC0)
         {
             int pointerOffset = ((len & 0x3F) << 8) | data[pos + 1];
@@ -250,7 +264,7 @@ static string ReadDnsName(byte[] data, int pos, int messageStart, out int endPos
 
 // Byte reading helpers
 static ushort ReadUInt16BigEndian(byte[] data, int offset)
-    => (ushort)((data[offset] << 8) | data[offset + 1]);
+    => (ushort)((data[offset] << 8) | data[offset + 1]); // << 8 = 2^8, so 0x01 = 256
 
 static uint ReadUInt32BigEndian(byte[] data, int offset)
     => (uint)((data[offset] << 24) | (data[offset + 1] << 16)
@@ -326,7 +340,7 @@ class FilterParser
         return left;
     }
 
-    private FilterNode ParseAnd()
+    private FilterNode ParseAnd() // And binds tighter than OR, ex = tcp or (udp and port 443)
     {
         var left = ParseTerm();
         while (Current.Type == TokenType.And)
@@ -374,7 +388,8 @@ record ParsedPacket(
     ushort? SrcPort = null,
     ushort? DstPort = null,
     string? DnsName = null,
-    int? HttpStatus = null
+    int? HttpStatus = null,
+    string? Timestamp = null
 );
 
 enum TokenType { Ident, Number, And, Or, Not, Eof }
